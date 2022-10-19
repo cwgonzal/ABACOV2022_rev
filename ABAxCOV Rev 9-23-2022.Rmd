@@ -1,0 +1,196 @@
+---
+title: "ABAxCOV Rev 9-23-22"
+author: "Cassin Gonzales"
+date: "9/23/2022"
+output: html_document
+---
+
+## Load Data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+library(here)  
+library(sjPlot)
+library(tidyverse) 
+library(haven) 
+library(lme4) 
+library(lmerTest)
+library(MuMIn)
+library(sjPlot)
+library(emmeans)
+library(modelsummary)
+library(glmmTMB)
+library(interactions) 
+library(rstatix)
+library(r2mlm)
+library(broom.mixed)  
+theme_set(theme_bw())
+```
+
+```{r load data}
+abacov <- read_sav(here("data_files","ABAxCOV 2022","Abacov4_long.sav"))
+```
+
+```{r view data}
+rmarkdown::paged_table(abacov)
+```
+
+```{r make factors}
+abacov$Site <- as.factor(abacov$Site)
+abacov$Sex <- as.factor(abacov$Sex)
+abacov$Race <- as.factor(abacov$Race)
+abacov$RaceTri <- as.factor(abacov$RaceTri)
+abacov$Age <- as.numeric(abacov$Age)
+abacov$PrimPay3 <- as.factor(abacov$PrimPay3)
+abacov$PrimPay25 <- as.factor(abacov$PrimPay25)
+abacov$Tele <- as.factor(abacov$Tele)
+```
+
+## Explore Data
+
+```{r explore}
+abacov %>%
+    select(Site, Age, Race, PrimPay3, Hours, Time) %>%
+    psych::pairs.panels(ellipses = FALSE, cex = 0.2, cex.cor = 1)
+```
+
+```{r spaghetti}
+p1 <- ggplot(abacov, aes(x = Time, y = Hours)) + 
+  geom_point() + 
+  geom_line(aes(group = ID)) +  # add lines to connect the data for each person
+  # add a mean trajectory
+  stat_summary(fun = "mean", col = "red", size = 1, geom = "line")
+p1
+```
+Based on this, we decided to go with 3 phases. The X axis shows specific months - 0 is March 2019 and 24 is February 2021.  Phase 1 (pre-covid) is march 2019 (0) - February 2020 (11). Phase 2 (crisis) is March 2020 (12) - May 2020 (14). Phase 3 (mitigation) is June 2020 (15) - February 2021 (24).  We decided to make a third phase because, after June 2020, the pre-covid pattern of hours each month resumes (just at a lower level).  
+
+```{r meansd}
+abacov %>%
+  get_summary_stats(Hours, type = "mean_sd")
+
+abacov %>%
+  group_by(PrimPay3) %>%
+  get_summary_stats(Hours, type = "mean_sd")
+
+abacov %>%
+  group_by(RaceTri) %>%
+  get_summary_stats(Hours, type = "mean_sd")
+```
+
+
+```{r msd phase}
+abacov %>%
+  group_by(Phase) %>%
+  get_summary_stats(Hours, type = "mean_sd")
+```
+
+```{r msd primpay}
+abacov %>%
+  group_by(Phase, PrimPay3) %>%
+  get_summary_stats(Hours, type = "mean_sd")
+```
+
+```{r m sd race}
+abacov %>%
+  group_by(Phase, RaceTri) %>%
+  get_summary_stats(Hours, type = "mean_sd")
+```
+
+## Unconditional Model
+
+```{r unconditional}
+ran_int <- lmer(Hours ~ 1 + (1 | ID), data = abacov)
+
+summary(ran_int)
+```
+fixed effect:
+Y00 is 58.47.  The estimated grand mean of hours for all participants is 58.47
+
+random effect:
+Uij = 643.1 is the deviation between jth individual and the grand mean.
+Eij = 1072.1 this is the deviation of the ith timepoint from the mean hours received by a child. 
+
+### ICC calculation
+```{r ICC}
+643.1/(643.1 + 1072.1)
+```
+The proportation of the variance in hours of therapy utillization that is due to between participant differences is .375.  
+
+
+### Design Effect
+
+Design effect = 1 + (average cluster size - 1) x ICC
+
+```{r mean cluster size}
+mean(table(abacov$ID))
+```
+
+mean cluster size = 24
+
+```{r DE}
+1 + 23*.375
+```
+
+design effect = 9.625
+
+
+## Hypothesis Testing
+```{r mod 1 no cov}
+m_phase <- glmmTMB(Hours ~ Phase1 + Phase2 + Phase3 + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_phase)
+```
+
+During phase 1, hours of therapy significantly decreased by an average of 1.44 hours per month 
+During phase 2, hours of therapy significantly decreased by an average of 10.8 hours per month 
+During phase 3, hours of therapy significantly increased by an average of 2.4 hours per month 
+
+```{r mod 1 season}
+m_season <- glmmTMB(Hours ~ Phase1 + Phase2 + Phase3 + Season + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_season)
+```
+
+Clients recieved an average of 5.5 less hours per month during "off months" compared to "on months"
+
+
+```{r mod1 cov}
+m_covar <- glmmTMB(Hours ~ Phase1 + Phase2 + Phase3 + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_covar)
+```
+
+FINAL MAIN EFFECT MODEL
+```{r Mod1}
+m_covar5 <- glmmTMB(Hours ~ Phase1 + Phase2 + Phase3 + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_covar5)
+```
+
+March 2019: 90.61 hours
+Phase 1: decrease 1.54 per month
+phase 2: decrease 10.65 per month
+phase three: increase 2.34 per month
+
+### Model 2
+```{r mod2}
+m_race <- glmmTMB(Hours ~ (Phase1 + Phase2 + Phase3) * RaceTri + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_race)
+```
+
+
+```{r mod2 alt}
+m_race5 <- glmmTMB(Hours ~ (Phase1 + Phase2 + Phase3) * Race + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_race5)
+```
+
+### Model 3
+```{r mod3}
+m_primpay <- glmmTMB(Hours ~ (Phase1 + Phase2 + Phase3) * PrimPay3 + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_primpay)
+```
+
+### Model 4
+
+```{r mod4}
+m_full1 <- glmmTMB(Hours ~ (Phase1 + Phase2 + Phase3) * PrimPay3 * RaceTri + Season + Age + Site + (Phase1 + Phase2 + Phase3 | ID), data = abacov, REML = TRUE)
+summary(m_full1)
+```
